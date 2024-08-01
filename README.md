@@ -101,6 +101,105 @@ void log_info(with_source_location<std::format_string<Args...>> fmt, Args&&... a
 
 这样的话，在调用`log_info`函数的位置，`with_source_location`的构造函数就会被调用，将`std::source_location::current()`传给`loc`，这样就可以实现在调用`log_info`函数的地方获取文件名、函数名、行号等信息。**这是一种解决`Arg&&... args`后仍有默认参数的方案。**
 
+现在我们使用`x-macro`技术来实现日志库的级别控制。
+
+我们希望利用`enum`来表示日志的级别，后续根据不同的级别来输出不同的日志。我们可以这样定义`enum`：
+
+```cpp
+enum class log_level : std::uint8_t {
+        trace,
+        debug,
+        info,
+        critical,
+        warn,
+        error,
+        fatal,
+    };
+```
+在利用`level`生成级别名字时，我们需要这样编写函数：
+    
+```cpp
+inline std::string log_level_name(log_level lev) {
+    switch (lev) {
+        case log_level::trace: return "trace";
+        case log_level::debug: return "debug";
+        case log_level::info: return "info";
+        case log_level::critical: return "critical";
+        case log_level::warn: return "warn";
+        case log_level::error: return "error";
+        case log_level::fatal: return "fatal";
+    }
+    return "unknown";
+}
+```
+这里出现了大量的重复代码，我们可以使用`x-macro`技术来解决这个问题。
+
+```cpp
+#define LOG_LEVELS(X) \
+    X(trace) \
+    X(debug) \
+    X(info) \
+    X(critical) \
+    X(warn) \
+    X(error) \
+    X(fatal)
+
+enum class log_level : std::uint8_t {
+#define FUNCTION(name) name,
+    LOG_LEVELS(FUNCTION)
+#undef FUNCTION
+        
+inline std::string log_level_name(log_level lev) {
+    switch (lev) {
+#define FUNCTION(name) case log_level::name: return #name;
+        LOG_LEVELS(FUNCTION)
+#undef FUNCTION
+    }
+    return "unknown";
+}
+```
+是不是非常的简洁，而且易于维护。这里可以用`x-macro`技术来生成函数名称中带有`log_level`的函数。
+
+```c++
+#define _FUNCTION(name) \
+template <typename... Args> \
+void log_##name(details::with_source_location<std::format_string<Args...>> fmt, Args &&...args) { \
+    return generic_log(log_level::name, std::move(fmt), std::forward<Args>(args)...); \
+}
+    MICROLOG_FOREACH_LOG_LEVEL(_FUNCTION)
+#undef _FUNCTION
+```
+
+在设置日志库的全局变量时，我们可以通过代码直接设置，也可以通过环境变量来设置。
+
+```cpp
+namespace details {
+
+inline log_level g_max_level = [] () -> log_level {
+    if (auto lev = std::getenv("MICROLOG_LEVEL")) {
+        return details::log_level_from_name(lev);
+    }
+    return log_level::info;
+} ();
+
+inline std::ofstream g_log_file = [] () -> std::ofstream {
+    if (auto path = std::getenv("MICROLOG_FILE")) {
+        return std::ofstream(path, std::ios::app);
+    }
+    return {};
+} ();
+
+}   // namespace details
+
+inline void set_log_file(const std::string& path) {
+    details::g_log_file = std::ofstream(path, std::ios::app);
+}
+
+inline void set_log_level(log_level lev) {
+    details::g_max_level = lev;
+}
+```
+
 
 
 

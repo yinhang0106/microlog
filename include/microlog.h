@@ -2,119 +2,138 @@
 
 #include <format>
 #include <source_location>
+#include <chrono>
 #include <iostream>
+#include <fstream>
 #include <cstdint>
 
 namespace microlog {
 
 // x-macro technique
-#define MICROLOG_FOREACH_LOG_LEVEL(f) \
-    f(trace) \
-    f(debug) \
-    f(info) \
-    f(critical) \
-    f(warning) \
-    f(error) \
-    f(fatal)
+#define MICROLOG_FOREACH_LOG_LEVEL(x) \
+    x(trace) \
+    x(debug) \
+    x(info) \
+    x(critical) \
+    x(warn) \
+    x(error) \
+    x(fatal)
 
     enum class log_level : std::uint8_t {
-#define FUNCTION(name) name,
-        MICROLOG_FOREACH_LOG_LEVEL(FUNCTION)
-#undef FUNCTION
+#define _FUNCTION(name) name,
+        MICROLOG_FOREACH_LOG_LEVEL(_FUNCTION)
+#undef _FUNCTION
     };
 
     namespace details {
 
 #if defined(__linux__) || defined(__APPLE__)
-        inline char level_ansi_colors[static_cast<std::uint8_t>(log_level::fatal) + 1][6] = {
-                "37m",
-                "35m",
-                "32m",
-                "34m",
-                "33m",
-                "31m",
-                "31;1m",
+        inline constexpr char k_level_ansi_colors[(std::uint8_t)log_level::fatal + 1][8] = {    // enum to string store
+                "\E[37m",
+                "\E[35m",
+                "\E[32m",
+                "\E[34m",
+                "\E[33m",
+                "\E[31m",
+                "\E[31;1m",
         };
-
-#define MICROLOG_IF_HAS_ANSI_COLOR(x) x
+        inline constexpr char k_reset_ansi_color[4] = "\E[m";
+#define _MICROLOG_IF_HAS_ANSI_COLORS(x) x
 #else
-#define MICROLOG_IF_HAS_ANSI_COLOR(x)
+        #define _MINILOG_IF_HAS_ANSI_COLORS(x)
+inline constexpr char k_level_ansi_colors[(std::uint8_t)log_level::fatal + 1][1] = {
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+};
+inline constexpr char k_reset_ansi_color[1] = "";
 #endif
 
-        inline std::string log_level_name(log_level level) {    // TODO: must be inline!!!
-            switch (level) {
-#define FUNCTION(name) case log_level::name: return #name;
-                MICROLOG_FOREACH_LOG_LEVEL(FUNCTION)
-#undef FUNCTION
+        inline std::string log_level_name(log_level lev) {
+            switch (lev) {
+#define _FUNCTION(name) case log_level::name: return #name;
+                MICROLOG_FOREACH_LOG_LEVEL(_FUNCTION)
+#undef _FUNCTION
             }
             return "unknown";
         }
 
-        inline log_level log_level_name(std::string_view level) {
-#define FUNCTION(name) if (level == #name) return log_level::name;
-            MICROLOG_FOREACH_LOG_LEVEL(FUNCTION)
-#undef FUNCTION
-        return log_level::info;
+        inline log_level log_level_from_name(std::string lev) {
+#define _FUNCTION(name) if (lev == #name) return log_level::name;
+            MICROLOG_FOREACH_LOG_LEVEL(_FUNCTION)
+#undef _FUNCTION
+            return log_level::info;
         }
 
-//static log_level max_level = log_level::trace;
-        inline log_level g_max_level = log_level::debug;      // TODO: static or inline? must be inline!!!
-
-        template<typename T>
+        template <class T>
         struct with_source_location {
         private:
             T inner;
             std::source_location loc;
 
         public:
-            template<class U>
-            requires std::constructible_from<T, U>
-            consteval with_source_location(U &&inner_, std::source_location loc_ = std::source_location::current())
-                    : inner(std::forward<U>(inner_)), loc(loc_) {}
-
-            [[nodiscard]]
+            template <class U> requires std::constructible_from<T, U>
+            consteval with_source_location(U &&inner, std::source_location loc = std::source_location::current())
+                    : inner(std::forward<U>(inner)), loc(loc) {}
             constexpr T const &format() const { return inner; }
-
-            [[nodiscard]]
-            constexpr std::source_location const &location() const { return loc; }
+            [[nodiscard]] constexpr std::source_location const &location() const { return loc; }
         };
 
+        inline log_level g_max_level = [] () -> log_level {
+            if (auto lev = std::getenv("MICROLOG_LEVEL")) {
+                return details::log_level_from_name(lev);
+            }
+            return log_level::info;
+        } ();
 
-        template<typename... Args>
-        void generic_log(log_level lev, with_source_location<std::format_string<Args...>> fmt, Args &&...args) {
+        inline std::ofstream g_log_file = [] () -> std::ofstream {
+            if (auto path = std::getenv("MICROLOG_FILE")) {
+                return std::ofstream(path, std::ios::app);
+            }
+            return {};
+        } ();
+
+        inline void output_log(log_level lev, std::string msg, std::source_location const &loc) {
+            std::chrono::zoned_time now{std::chrono::current_zone(), std::chrono::high_resolution_clock::now()};
+            msg = std::format("{} {}:{} [{}] {}", now, loc.file_name(), loc.line(), details::log_level_name(lev), msg);
+            if (g_log_file) {
+                g_log_file << msg + '\n';
+            }
             if (lev >= g_max_level) {
-                auto const &loc = fmt.location();
-                std::cout  MICROLOG_IF_HAS_ANSI_COLOR( << "\E[" << level_ansi_colors[static_cast<std::uint8_t>(lev)])
-                << loc.file_name() << ':' << loc.line() << "[" << log_level_name(lev) << "] " <<
-                          std::vformat(fmt.format().get(), std::make_format_args(args...))
-                MICROLOG_IF_HAS_ANSI_COLOR(<< "\E[m") << '\n';
+                std::cout << _MICROLOG_IF_HAS_ANSI_COLORS(k_level_ansi_colors[(std::uint8_t)lev] +)
+                             msg _MICROLOG_IF_HAS_ANSI_COLORS(+ k_reset_ansi_color) + '\n';
             }
         }
 
-    } // namespace details
+    }   // namespace details
 
-    // MICROLOG_LEVEL=trace ./a.out
-    inline log_level g_max_level = [] () -> log_level {     // TODO: set max_level to env var
-        if (auto env = std::getenv("MICROLOG_LEVEL"); env) {
-            return details::log_level_name(env);
-        }
-        return log_level::info;
-    }();
-
-    inline void set_max_level(log_level level) {
-        details::g_max_level = level;
+    inline void set_log_file(const std::string& path) {
+        details::g_log_file = std::ofstream(path, std::ios::app);
     }
 
-#define FUNCTION(name) \
+    inline void set_log_level(log_level lev) {
+        details::g_max_level = lev;
+    }
+
+    template <typename... Args>
+    void generic_log(log_level lev, details::with_source_location<std::format_string<Args...>> fmt, Args &&...args) {
+        auto const &loc = fmt.location();
+        auto msg = std::vformat(fmt.format().get(), std::make_format_args(args...));
+        details::output_log(lev, std::move(msg), loc);
+    }
+
+#define _FUNCTION(name) \
 template <typename... Args> \
 void log_##name(details::with_source_location<std::format_string<Args...>> fmt, Args &&...args) { \
-    details::generic_log(log_level::name, std::move(fmt), std::forward<Args>(args)...); \
+    return generic_log(log_level::name, std::move(fmt), std::forward<Args>(args)...); \
 }
+    MICROLOG_FOREACH_LOG_LEVEL(_FUNCTION)
+#undef _FUNCTION
 
-    MICROLOG_FOREACH_LOG_LEVEL(FUNCTION)
+#define MICROLOG_P(x) ::minilog::log_debug(#x "={}", x)
 
-#undef FUNCTION
-
-#define MICROLOG_P(x) ::minilog::log_debug(#x " = {}", x)   // TODO: add ::microlog::
-
-} // namespace microlog
+}   // namespace microlog
