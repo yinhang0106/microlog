@@ -9,3 +9,4 @@ add_library(microlog INTERFACE)
 target_include_directories(microlog INTERFACE include)
 
 add_subdirectory(test)
+add_subdirectory(docs)
